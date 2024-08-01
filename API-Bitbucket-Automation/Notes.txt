@@ -1,0 +1,26 @@
+The pipeline defined here is for triggering and monitoring Bitbucket pipelines for specific repositories, branches, and trailers. It uses a Python script to handle the triggering and monitoring process. Here's a brief description of its components:
+
+Pipeline Definitions:
+
+Step triggerpipeline: This step is responsible for:
+Printing the Bitbucket pipeline UUID.
+Navigating to the Bitbucket clone directory.
+Setting up a Python virtual environment.
+Installing required Python packages.
+Running a Python script (config_trigger.py) with arguments for trailer, repository, and branch.
+Cleaning up by deactivating and removing the virtual environment.
+Custom Pipeline ConfigureTrailer: This allows the user to configure and trigger pipelines based on specific trailers, repositories, and branches.
+
+Python Script Description
+The Python script (config_trigger.py) performs the following tasks:
+
+Authentication: Uses a Bitbucket authentication token stored in the environment variable BITBUCKET_AUTH_TOKEN.
+Triggering Pipelines:
+Forms the appropriate API request to trigger a pipeline in Bitbucket for the specified repository and branch.
+Sends the request and captures the pipeline UUID.
+Monitoring Pipelines:
+Periodically checks the status of the triggered pipeline.
+Prints logs for each step of the pipeline.
+Error Handling and Result Reporting:
+Monitors for completion and success/failure of all steps.
+Stops execution if any step fails or is stopped.

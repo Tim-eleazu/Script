@@ -1,0 +1,31 @@
+This script interacts with the Bitbucket API to extract and process details from pull requests (PRs). It specifically identifies changes related to parser arguments in the PRs and generates an HTML summary.
+
+Key Functions:
+Environment Setup:
+
+Loads environment variables using dotenv.
+get_parser_args_matches(file_changes):
+
+Extracts lines that contain parser.add_argument from file changes.
+get_parser_arguments(pr_id):
+
+Retrieves the diff of a PR and extracts parser argument additions.
+get_pr_title(pr_id):
+
+Fetches and formats the title of a PR.
+get_pr_id_from_el(text):
+
+Extracts PR ID from text using regex.
+gen_link_from_text(link):
+
+Generates an HTML link from a URL.
+gen_html(idx, p_text, link):
+
+Generates an HTML paragraph for the PR details.
+extract_pull_request_details(pullRequestId):
+
+Fetches PR details, processes them to find specific updates (excluding reverted commits), and generates an HTML report.
+Usage:
+Fetches PR details from Bitbucket.
+Identifies and extracts parser argument additions.
+Generates and saves an HTML report summarizing the findings.

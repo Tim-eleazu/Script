@@ -1,0 +1,2382 @@
+options:
+  max-time: 120
+
+definitions:
+  steps:
+    - step: &unit-tests
+        name: Running unit tests
+        runs-on:
+            - winrunner
+            - windows
+            - self.hosted
+        script:
+            - cd $Env:BITBUCKET_CLONE_DIR
+            - $pythonInterpreter = "C:\bitbucket\$($Env:BITBUCKET_REPO_SLUG)\Scripts\python.exe"
+            - $pythonVenv = $pythonInterpreter.Replace("\Scripts\python.exe", "")
+            - |
+                $pythonInterpreter = "C:\bitbucket\$($Env:BITBUCKET_REPO_SLUG)\Scripts\python.exe"
+                $pythonVenv = $pythonInterpreter.Replace("\Scripts\python.exe", "")
+                if (-not (Test-Path -path $pythonInterpreter)){
+                    $pythonVenv = $pythonInterpreter.Replace("\Scripts\python.exe", "")
+                    python -m venv $pythonVenv
+                }
+                & $pythonInterpreter -m pip install pytest-mock
+                & $pythonInterpreter -m pip install -r requirements.txt --no-deps
+                & $pythonInterpreter -m pip install "$($Env:DOWNLOADS_URL)?product=prod2" --force --no-deps
+                & $pythonInterpreter -m pytest -v
+    
+    - step: &scripts-args
+        runs-on:
+            - winrunner
+            - windows
+            - self.hosted
+        script:
+            - cd $Env:BITBUCKET_CLONE_DIR
+            - |
+                Import-Module IAA
+                $version = Find-ProductVersion
+                $pythonInterpreter = "C:\bitbucket\$($Env:BITBUCKET_REPO_SLUG)\Scripts\python.exe"
+                & $pythonInterpreter -m prod1.runnable_db $Env:BITBUCKET_BRANCH $version
+                Remove-Module IAA
+        artifacts:
+            - script_arguments.json
+
+    - step: &build
+        runs-on:
+            - winrunner
+            - windows
+            - self.hosted
+        script:
+            - cd $Env:BITBUCKET_CLONE_DIR
+            - poetry build
+        artifacts:
+            - dist/*.tar.gz
+    
+    - step: &upload
+        name: "Find and export tar.gz file"
+        script: 
+          - pipe: atlassian/bitbucket-upload-file:0.7.1
+            variables:
+              BITBUCKET_USERNAME: $BITBUCKET_USERNAME
+              BITBUCKET_APP_PASSWORD: $BITBUCKET_APP_PASSWORD
+              FILENAME: '$BITBUCKET_CLONE_DIR/dist/*.tar.gz'
+
+    - step: &ship
+        runs-on:
+            - winrunner
+            - windows
+            - self.hosted
+        script:
+            - cd $Env:BITBUCKET_CLONE_DIR
+            - cd .\pipelines\
+            - python .\upload.py -t build -p "..\dist\*tar.gz"
+            - python .\upload.py -t build -p "..\dist\*whl"
+
+    - step: &build-ship
+        runs-on:
+            - winrunner
+            - windows
+            - self.hosted
+        script:
+            - cd $Env:BITBUCKET_CLONE_DIR
+            - poetry build
+            - cd .\pipelines\
+            - python .\upload.py -t build -p "..\dist\*tar.gz"
+            - python .\upload.py -t build -p "..\dist\*whl"
+        artifacts:
+            - dist/*.tar.gz
+    
+    - step: &build-ship-upload
+        runs-on:
+            - winrunner
+            - windows
+            - self.hosted
+        script:
+            - cd $Env:BITBUCKET_CLONE_DIR
+            - poetry build
+            - cd .\pipelines\
+            - python .\upload.py -t build -p "..\dist\*tar.gz"
+            - python .\upload.py -t build -p "..\dist\*whl"
+            - pipe: atlassian/bitbucket-upload-file:0.7.1
+              variables:
+              BITBUCKET_USERNAME: $BITBUCKET_USERNAME
+              BITBUCKET_APP_PASSWORD: $BITBUCKET_APP_PASSWORD
+              FILENAME: '$BITBUCKET_CLONE_DIR/dist/*.tar.gz'
+        artifacts:
+            - dist/*.tar.gz
+    
+    - step: &deploy
+        runs-on:
+            - winrunner
+            - windows
+            - self.hosted 
+        script:
+        - cd $Env:BITBUCKET_CLONE_DIR
+        - Import-Module IAA
+        - $version = Find-ProductVersion
+        - $creds = Register-Credentials -username $Env:PRODOOPS_USERNAME -password $Env:PRODOOPS_PASSWORD
+        - $serverList = $Env:TRAILER_SERVERS -split ','
+        - |
+            foreach ($server in $serverList) {
+                if ((Test-NetConnection -ComputerName $server).PingSucceeded) {
+                    # Install dependencies and prod1
+                    Set-ProcessingEnvironment -Hostname $server -Credentials $creds -PythonInterpreter $Env:PYTHON_INTERPRETER -RootVenvLocation $Env:INSTALLATION_PATH
+                    Install-Product -Hostname $server -Credential $creds -Product $Env:BITBUCKET_REPO_SLUG -Slot $Env:BITBUCKET_BRANCH -PythonInterpreter $Env:PYTHON_INTERPRETER -VenvLocation $Env:INSTALLATION_PATH -Target $Env:prod1_INSTALLATION_PATH -ArtifactPath ".\dist" -Force
+
+                    # Generate deployment log
+                    $timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
+                    $message = "Successfully installed prod1 $version on $server at $timestamp"
+                    $outputDir = Join-Path $Env:BITBUCKET_CLONE_DIR "reports"
+                    if (-not (Test-Path $outputDir)) { New-Item -ItemType Directory -Path $outputDir }
+                    $logFileName = "${Env:TRAILER_ALIAS}_deployments.txt"
+                    $outputFilePath = Join-Path $outputDir $logFileName
+                    Add-Content -Path $outputFilePath -Value $message
+
+                    if (Test-Path $outputFilePath) {
+                        Write-Host "The deployment log file has been generated: $logFileName"
+                        Get-Content $outputFilePath
+                    } else {
+                        Write-Host "The deployment log file was not generated."
+                    }
+                    C:\AzCopy\azcopy.exe copy $outputFilePath "$Env:BLOB_SAS_URL" --recursive=true
+
+                    # Adding blank line to generate clean logs in the pipeline
+                    Write-Host ""
+                    Write-Host "-------------********---------------"
+                    Write-Host ""
+                }
+            }
+        
+        - |
+            # Update GDM Script Templates
+            if ((Test-NetConnection -ComputerName $Env:GDM_URL).PingSucceeded){
+                Add-GDMSlot -Username $Env:PRODOOPS_USERNAME -Password $Env:PRODOPS_PASSWORD -GDM_URL "https://$($Env:GDM_URL)/api" -Environment $Env:BITBUCKET_BRANCH -Enabled $true
+                Update-GDMScriptArgs -Username $Env:PRODOOPS_USERNAME -Password $Env:PRODOPS_PASSWORD -GDM_URL "https://$($Env:GDM_URL)/api" -Environment $Env:BITBUCKET_BRANCH -Version $version -ScriptArgs ".\script_arguments.json" -TrailerAlias $Env:TRAILER_ALIAS
+            }
+        - Remove-Module IAA
+        artifacts:
+            - reports/*.txt 
+    
+    - step: &rollout
+        runs-on: 
+            - winrunner
+            - windows
+            - self.hosted 
+        script:
+            - cd $Env:BITBUCKET_CLONE_DIR 
+            - Import-Module IAA
+            - $desiredVersion = Find-ProductVersion
+            - |
+                #============ Fetch the current activated version from the API ===================
+                $headers = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"
+                $headers.Add("Authorization", "Bearer $Env:GDM_TOKEN")
+                $response = Invoke-RestMethod "https://$($Env:GDM_URL)/api/processing-version/getActiveVersion?slot=Production" -Method 'GET' -Headers $headers
+                $version = $response.activeVersion
+                Write-Output "************* GDM Version is $version ************"
+
+                # Register credentials
+                $creds = Register-Credentials -username $Env:PRODOOPS_USERNAME -password $Env:PRODOOPS_PASSWORD
+
+                # #================= Check Artifact Version using Git Tags========================
+                $headers = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"
+                $headers.Add("Authorization", "Bearer $Env:AUTH_TOKEN")
+                #Use "" in next line
+                $response = Invoke-RestMethod 'https://api.bitbucket.org/2.0/repositories/$Env:BITBUCKET_REPO_SLUG/prod1/refs/tags' -Method 'GET' -Headers $headers  
+                # Filter and sort the tags
+                $tags = $response.values | Where-Object { $_.name -match "^v1\.\d+\.\d+$" } | Sort-Object { [version]($_.name -replace "^v", "") } -Descending
+                # Output only the first sorted tag without "Tag: v"
+                $artifactVersion = $tags[0].name -replace "^v", ""
+                Write-Output "************* Latest prod1 Version is $artifactVersion ************"
+
+                # If the GDM version matches the git tag artifact version, update all nodes
+                if ($version -eq $artifactVersion) {
+                    # Split the server list and iterate over each server
+                    $serverList = $Env:TRAILER_SERVERS -split ','
+                    foreach ($server in $serverList) {
+                        if ((Test-NetConnection -ComputerName $server).PingSucceeded) {
+                            Write-Output "Updating $server to Version: $version"
+
+                            # Updating the Processing ecosystem with the latest version
+                            Register-ProductVersion -Hostname $server -Credential $creds -Product $Env:BITBUCKET_REPO_SLUG -VenvPath $Env:INSTALLATION_PATH -Version $version -Slot "Production"
+
+                            if ((Test-NetConnection -ComputerName $server).PingSucceeded) {
+                                # Check prod1 version
+                                $pipShowOutput = Invoke-Command -ComputerName $server -Credential $creds -ScriptBlock {
+                                    & "C:\Program Files\Processing\root\python.exe" -m pip show prod1
+                                }
+                                # Write-Output $pipShowOutput
+
+                                $filteredOutput = $pipShowOutput | Select-String -Pattern "^(Name|Version):"
+                                $versionOnNodeAfterRegistration = $filteredOutput | Select-String -Pattern "^Version:" | ForEach-Object { $_.ToString().Split(':')[1].Trim() }
+                                Write-Output "************ prod1 version on $server is $versionOnNodeAfterRegistration ************"
+
+                                # Check prod2 version
+                                $pipShowOutputprod2 = Invoke-Command -ComputerName $server -Credential $creds -ScriptBlock {
+                                    & "C:\Program Files\Processing\root\python.exe" -m pip show prod2
+                                }
+                                # Write-Output $pipShowOutputprod2
+
+                                $filteredOutputprod2 = $pipShowOutputprod2 | Select-String -Pattern "^(Name|Version):"
+                                $versionOnNodeAfterRegistrationprod2 = $filteredOutputprod2 | Select-String -Pattern "^Version:" | ForEach-Object { $_.ToString().Split(':')[1].Trim() }
+                                if (-not $versionOnNodeAfterRegistrationprod2) {
+                                    $versionOnNodeAfterRegistrationprod2 = "no version found"
+                                }
+                                Write-Output "************ prod2 version on $server is $versionOnNodeAfterRegistrationprod2 ************"
+
+                                # Check prod3 version
+                                $pipShowOutputprod3 = Invoke-Command -ComputerName $server -Credential $creds -ScriptBlock {
+                                    & "C:\Program Files\Processing\root\python.exe" -m pip show prod3
+                                }
+                                # Write-Output $pipShowOutputprod3
+
+                                $filteredOutputprod3 = $pipShowOutputprod3 | Select-String -Pattern "^(Name|Version):"
+                                $versionOnNodeAfterRegistrationprod3 = $filteredOutputprod3 | Select-String -Pattern "^Version:" | ForEach-Object { $_.ToString().Split(':')[1].Trim() }
+                                if (-not $versionOnNodeAfterRegistrationprod3) {
+                                    $versionOnNodeAfterRegistrationprod3 = "no version found"
+                                }
+                                Write-Output "************ prod3 version on $server is $versionOnNodeAfterRegistrationprod3 ************"
+                            }
+                        }
+                    }
+                    $headers = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"
+                    $headers.Add("Authorization", "Bearer $Env:GDM_TOKEN")
+                    $headers.Add("Content-Type", "application/x-www-form-urlencoded")
+
+                    $body = "version=$artifactVersion"
+
+                    $response = Invoke-RestMethod "https://$($Env:GDM_URL)/api/processing-version?slot=Production" -Method 'PUT' -Headers $headers -Body $body
+                    $response | ConvertTo-Json 
+
+                    Write-Host "*************** GDM has been updated to latest prod1 version $artifactVersion **********************"
+                } 
+            - |
+                if ($version -ne $artifactVersion) {
+                    Write-Output "************ The latest prod1 version ($artifactVersion) is not on GDM. No update performed. ************"
+
+                    
+                    # Split the server list and iterate over each server
+                    $serverList = $Env:TRAILER_SERVERS -split ','
+
+                    foreach ($server in $serverList) {
+                        if ((Test-NetConnection -ComputerName $server).PingSucceeded) {
+                            Write-Output "Updating $server to latest artifact Version: $artifactVersion"
+                            Register-ProductVersion -Hostname $server -Credential $creds -Product $Env:BITBUCKET_REPO_SLUG -VenvPath $Env:INSTALLATION_PATH -Version $artifactVersion -Slot "Production"
+
+                            if ((Test-NetConnection -ComputerName $server).PingSucceeded) {
+                                # Check prod1 version
+                                $ShowOutput = Invoke-Command -ComputerName $server -Credential $creds -ScriptBlock {
+                                    & "C:\Program Files\Processing\root\python.exe" -m pip show prod1 
+                                }
+
+                                $filteredOutput = $ShowOutput | Select-String -Pattern "^(Name|Version):"
+                                $versionOnNodeAfterRegistration = $filteredOutput | Select-String -Pattern "^Version:" | ForEach-Object { $_.ToString().Split(':')[1].Trim() }
+                                Write-Output "************ prod1 version on $server is $versionOnNodeAfterRegistration ************"
+
+                                # Check prod2 version
+                                $pipShowOutputprod2 = Invoke-Command -ComputerName $server -Credential $creds -ScriptBlock {
+                                    & "C:\Program Files\Processing\root\python.exe" -m pip show prod2
+                                }
+                                # Write-Output $pipShowOutputprod2
+
+                                $filteredOutputprod2 = $pipShowOutputprod2 | Select-String -Pattern "^(Name|Version):"
+                                $versionOnNodeAfterRegistrationprod2 = $filteredOutputprod2 | Select-String -Pattern "^Version:" | ForEach-Object { $_.ToString().Split(':')[1].Trim() }
+                                if (-not $versionOnNodeAfterRegistrationprod2) {
+                                    $versionOnNodeAfterRegistrationprod2 = "no version found"
+                                }
+                                Write-Output "************ prod2 version on $server is $versionOnNodeAfterRegistrationprod2 ************"
+
+                                # Check prod3 version
+                                $pipShowOutputprod3 = Invoke-Command -ComputerName $server -Credential $creds -ScriptBlock {
+                                    & "C:\Program Files\Processing\root\python.exe" -m pip show prod3
+                                }
+                                # Write-Output $pipShowOutputprod3
+
+                                $filteredOutputprod3 = $pipShowOutputprod3 | Select-String -Pattern "^(Name|Version):"
+                                $versionOnNodeAfterRegistrationprod3 = $filteredOutputprod3 | Select-String -Pattern "^Version:" | ForEach-Object { $_.ToString().Split(':')[1].Trim() }
+                                if (-not $versionOnNodeAfterRegistrationprod3) {
+                                    $versionOnNodeAfterRegistrationprod3 = "no version found"
+                                }
+                                Write-Output "************ prod3 version on $server is $versionOnNodeAfterRegistrationprod3 ************"
+                            }
+                        }
+                    }
+                    $headers = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"
+                    $headers.Add("Authorization", "Bearer $Env:GDM_TOKEN")
+                    $headers.Add("Content-Type", "application/x-www-form-urlencoded")
+
+                    $body = "version=$artifactVersion"
+
+                    $response = Invoke-RestMethod "https://$($Env:GDM_URL)/api/processing-version?slot=Production" -Method 'PUT' -Headers $headers -Body $body
+                    $response | ConvertTo-Json 
+
+                    Write-Host "*************** GDM has been updated to latest prod1 version $artifactVersion **********************"
+                }
+            - Remove-Module IAA
+    
+    - step: &release_notes
+        name: Release Notes
+        runs-on: 
+            - reln
+            - windows
+            - self.hosted  
+        max-time: 15 
+        script: 
+            - cd $Env:BITBUCKET_CLONE_DIR
+            - cd .\pipelines\
+            - python -m venv venv
+            - .\venv\Scripts\activate
+            - pip install -r .\requirements.txt
+            - python .\release.py
+            - deactivate
+            - Remove-Item -Recurse -Force .\venv
+
+    - step: &rollback
+        runs-on:
+            - winrunner
+            - windows
+            - self.hosted 
+        script:
+            - cd $Env:BITBUCKET_CLONE_DIR
+            - Import-Module IAA
+            - | 
+                # Get Current GDM Version
+                $headers = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"
+                $headers.Add("Authorization", "Bearer $Env:GDM_TOKEN")
+
+                $response = Invoke-RestMethod "https://$($Env:GDM_URL)/api/processing-version/getActiveVersion?slot=Production" -Method 'GET' -Headers $headers
+                $response | ConvertTo-Json
+                $gdmversion = $response.activeVersion
+                Write-Output $gdmversion 
+
+            - |
+                # Arrange Git TAG versions in Decending order and get the second version on the list 
+                $headers = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"
+                $headers.Add("Authorization", "Bearer $Env:AUTH_TOKEN")
+                #Use "" in next line
+                $response = Invoke-RestMethod 'https://api.bitbucket.org/2.0/repositories/$Env:BITBUCKET_REPO_SLUG/prod1/refs/tags' -Method 'GET' -Headers $headers
+                # Filter and sort the tags
+                $tags = $response.values | Where-Object { $_.name -match "^v1\.\d+\.\d+$" } | Sort-Object { [version]($_.name -replace "^v", "") } -Descending
+                # Output only the first sorted tag without "Tag: v"
+                $previousTag = $tags[1].name -replace "^v", ""
+                $firstVersion = $previousTag
+
+                Write-Output "************** Previous TAG version is Product $firstVersion *****************"
+
+                # Split the server list and iterate over each server
+                $serverList = $Env:TRAILER_SERVERS -split ','
+                foreach ($server in $serverList) {
+                    if ((Test-NetConnection -ComputerName $server).PingSucceeded) {
+                        Write-Output "********** Rolling back $server to Version: $firstVersion **************** " 
+
+                        $creds = Register-Credentials -username $Env:PRODOOPS_USERNAME -password $Env:PRODOOPS_PASSWORD
+
+                        # Updating the Processing ecosystem with the latest version
+                        Register-ProductVersion -Hostname $server -Credential $creds -Product $Env:BITBUCKET_REPO_SLUG -VenvPath $Env:INSTALLATION_PATH -Version $firstVersion -Slot "Production"
+
+                        if ((Test-NetConnection -ComputerName $server).PingSucceeded) {
+                            $pipShowOutput = Invoke-Command -ComputerName $server -Credential $creds -ScriptBlock {
+                                & "C:\Program Files\Processing\root\python.exe" -m pip show prod1 
+                            }
+                            Write-Output $pipShowOutput
+
+                            $filteredOutput = $pipShowOutput | Select-String -Pattern "^(Name|Version):"
+                            $versionOnNodeAfterRegistration = $filteredOutput | Select-String -Pattern "^Version:" | ForEach-Object { $_.ToString().Split(':')[1].Trim() }
+                            Write-Output "************ prod1 version on $server is $versionOnNodeAfterRegistration *************" 
+
+                        # Check prod2 version
+                        $pipShowOutputprod2 = Invoke-Command -ComputerName $server -Credential $creds -ScriptBlock {
+                            & "C:\Program Files\Processing\root\python.exe" -m pip show prod2
+                        }
+                        # Write-Output $pipShowOutputprod2
+
+                        $filteredOutputprod2 = $pipShowOutputprod2 | Select-String -Pattern "^(Name|Version):"
+                        $versionOnNodeAfterRegistrationprod2 = $filteredOutputprod2 | Select-String -Pattern "^Version:" | ForEach-Object { $_.ToString().Split(':')[1].Trim() }
+                        if (-not $versionOnNodeAfterRegistrationprod2) {
+                            $versionOnNodeAfterRegistrationprod2 = "no version found"
+                        }
+                        Write-Output "************ prod2 version on $server is $versionOnNodeAfterRegistrationprod2 ************"
+
+                        # Check prod3 version
+                        $pipShowOutputprod3 = Invoke-Command -ComputerName $server -Credential $creds -ScriptBlock {
+                            & "C:\Program Files\Processing\root\python.exe" -m pip show prod3
+                        }
+                        # Write-Output $pipShowOutputprod3
+
+                        $filteredOutputprod3 = $pipShowOutputprod3 | Select-String -Pattern "^(Name|Version):"
+                        $versionOnNodeAfterRegistrationprod3 = $filteredOutputprod3 | Select-String -Pattern "^Version:" | ForEach-Object { $_.ToString().Split(':')[1].Trim() }
+                        if (-not $versionOnNodeAfterRegistrationprod3) {
+                            $versionOnNodeAfterRegistrationprod3 = "no version found"
+                        }
+                        Write-Output "************ prod3 version on $server is $versionOnNodeAfterRegistrationprod3 ************"
+                        }
+                    }
+                }
+            - | 
+                # Update GDM Version
+                $headers = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"
+                $headers.Add("Authorization", "Bearer $Env:GDM_TOKEN")
+                $headers.Add("Content-Type", "application/x-www-form-urlencoded")
+                $body = "version=$firstVersion"
+                $response = Invoke-RestMethod "https://$($Env:GDM_URL)/api/processing-version?slot=Production" -Method 'PUT' -Headers $headers -Body $body
+                $response | ConvertTo-Json
+
+            - Remove-Module IAA
+
+    - step: &deploy-sandbox
+        runs-on:
+            - winrunner
+            - windows
+            - self.hosted 
+        script:
+        - cd $Env:BITBUCKET_CLONE_DIR
+        - poetry build
+        - Import-Module IAA
+        - $version = Find-ProductVersion
+        - $creds = Register-Credentials -username $Env:PRODOOPS_USERNAME -password $Env:PRODOOPS_PASSWORD
+        - |
+            $runnerPyInterpreter = "C:\bitbucket\$($Env:BITBUCKET_REPO_SLUG)\Scripts\python.exe"
+            & $runnerPyInterpreter -m prod1.runnable_db $Env:BITBUCKET_BRANCH $version
+        - $serverList = $Env:TRAILER_SERVERS -split ','
+        - |
+            foreach ($server in $serverList) {
+                if ((Test-NetConnection -ComputerName $server).PingSucceeded) {
+                    # Install dependencies and prod1
+                    Set-ProcessingEnvironment -Hostname $server -Credentials $creds -PythonInterpreter $Env:PYTHON_INTERPRETER -RootVenvLocation $Env:INSTALLATION_PATH
+                    Install-Product -Hostname $server -Credential $creds -Product $Env:BITBUCKET_REPO_SLUG -Slot $Env:BITBUCKET_BRANCH -PythonInterpreter $Env:PYTHON_INTERPRETER -VenvLocation $Env:INSTALLATION_PATH -Target $Env:prod1_INSTALLATION_PATH -ArtifactPath ".\dist" -Force
+                    Install-Product -Hostname $server -Credential $creds -Product "prod2" -PythonInterpreter $Env:PYTHON_INTERPRETER -VenvLocation $Env:INSTALLATION_PATH -Force -ArtifactURL $Env:prod2_URL
+                    Install-Product -Hostname $server -Credential $creds -Product "prod3" -PythonInterpreter $Env:PYTHON_INTERPRETER -VenvLocation $Env:INSTALLATION_PATH -Force -ArtifactURL $Env:prod3_URL
+
+                    # Updating the Processing ecosystem with the latest version
+                    Register-ProductVersion -Hostname $server -Credential $creds -Product $Env:BITBUCKET_REPO_SLUG -Slot $Env:BITBUCKET_BRANCH -VenvName $Env:BITBUCKET_BRANCH -VenvPath $Env:INSTALLATION_PATH -Version $version
+
+                    # Granting read & execute access to privileged users
+                    foreach ($username in $Env:PRIVILEGED_LOCAL_USERS) {
+                        $identity = "$($server)\$($username)"
+                        Write-Host "Chosen Identity: $($identity)"
+                        Grant-Access -Hostname $server -Credential $creds -Path $Env:prod1_INSTALLATION_PATH -Username $identity -Recursive
+                    }
+                    foreach ($username in $Env:PRIVILEGED_DOMAIN_USERS) {
+                        Write-Host "Chosen Identity: $($username)"
+                        Grant-Access -Hostname $server -Credential $creds -Path $Env:prod1_INSTALLATION_PATH -Username $username -Recursive
+                    }
+
+                    #Exposing Alchemy
+                    Publish-Product -Hostname $server -Credential $creds -RootVenvLocation "C:\Program Files\Processing\development" -executable "prod3.exe" -Slot $Env:SLOT
+                    
+                    # Enabling DQH integration with Standards Report
+                    Publish-DQHKeys -Hostname $server -Credential $creds
+
+                    # Adding blank line to generate clean logs in the pipeline
+                    Write-Host ""
+                    Write-Host "-------------********---------------"
+                    Write-Host ""
+                }
+            }
+        
+        - |
+            # Update GDM Script Templates
+            if ((Test-NetConnection -ComputerName $Env:GDM_URL).PingSucceeded){
+                Add-GDMSlot -Username $Env:PRODOOPS_USERNAME -Password $Env:PRODOPS_PASSWORD -GDM_URL "https://$($Env:GDM_URL)/api" -Environment $Env:BITBUCKET_BRANCH -Enabled $true
+                Update-GDMScriptArgs -Username $Env:PRODOOPS_USERNAME -Password $Env:PRODOPS_PASSWORD -GDM_URL "https://$($Env:GDM_URL)/api" -Environment $Env:BITBUCKET_BRANCH -Version $version -ScriptArgs ".\script_arguments.json" -TrailerAlias $Env:TRAILER_ALIAS
+            }
+        - Remove-Module IAA
+
+    - step: &deploy-vault
+        name: "Syncronize vault's files/directories on NAS"
+        runs-on: 
+            - linux.shell
+            - rsync.runner     
+        max-time: 45
+        script:
+            - rsync -rp --fake-super --chmod=Fa=rxXs -e "ssh -i /tmp/id_rsa -o StrictHostKeyChecking=no" ${BITBUCKET_CLONE_DIR}/vault ${BB_RUNNER_USER}@${NAS_IP}:${VAULT_DESTINATION}
+
+    - step: &deploy-prod1-rsync
+        name: "Syncronize files/directories on NAS with the Repository"
+        runs-on: 
+            - linux.shell
+            - rsync.runner     
+        max-time: 15   
+        script:
+            - rsync -rp --fake-super --chmod=Fa=rxXs -e "ssh -i /tmp/id_rsa -o StrictHostKeyChecking=no" ${BITBUCKET_CLONE_DIR}/prod1 ${BB_RUNNER_USER}@${DEPLOY_CODE_RSYNC_SERVER}:${RSYNC_DESTINATION}
+ 
+pipelines:
+    branches:
+        Development:
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+            - step:
+                <<: *deploy-sandbox
+                name: Deploy Development Environment
+                deployment: Development
+
+        Staging:
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+            - step:
+                <<: *deploy-sandbox
+                name: Deploy UAT Environment
+                deployment: UAT
+        
+        Production:
+            - step:
+                <<: *unit-tests
+                name: Unit Testing
+            - step:
+                name: Build prod1
+                <<: *build
+                trigger: manual
+            - step:
+                name: Ship to Artifactory
+                <<: *ship
+            - step:
+                name: Upload to Downloads
+                <<: *upload
+            - step:
+                name: Populate Runnable arguments for GDM
+                <<: *scripts-args
+            - parallel:
+                - step:
+                    <<: *deploy
+                    name: Deploy to VirtualTrailer
+                    deployment: VirtualTrailer
+                - step:
+                    <<: *deploy
+                    name: Deploy to YYC
+                    deployment: YYC
+                - step:
+                    <<: *deploy
+                    name: Deploy to YYZ
+                    deployment: YYZ
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-01
+                    deployment: Toti-01
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-02
+                    deployment: Toti-02
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-03
+                    deployment: Toti-03
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-04
+                    deployment: Toti-04
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-05
+                    deployment: Toti-05
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-06
+                    deployment: Toti-06
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-07
+                    deployment: Toti-07
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-08
+                    deployment: Toti-08
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-09
+                    deployment: Toti-09
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-10
+                    deployment: Toti-10
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-11
+                    deployment: Toti-11
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-12
+                    deployment: Toti-12
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-13
+                    deployment: Toti-13
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-14
+                    deployment: Toti-14
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-15
+                    deployment: Toti-15
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-16
+                    deployment: Toti-16
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-17
+                    deployment: Toti-17
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-18
+                    deployment: Toti-18
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-19
+                    deployment: Toti-19
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-20
+                    deployment: Toti-20
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-21
+                    deployment: Toti-21
+
+
+    custom:
+        Artifactory: 
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+            - step:
+                name: Build prod1
+                <<: *build
+            - step:
+                name: Ship to Artifactory
+                <<: *ship
+            - step:
+                name: Upload to Downloads
+                <<: *upload
+        Release-Notes:
+            - step:
+                name: Send Release notes to teams
+                <<: *release_notes
+            - step:
+                name: upload test
+                <<: *build
+            - step:
+                name: upload test
+                <<: *upload
+
+        prod1:
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+            - step:
+                name: Build prod1
+                <<: *build
+            - step:
+                name: Ship to Artifactory
+                <<: *ship
+            - step:
+                name: Upload to Downloads
+                <<: *upload
+            - step:
+                name: Populate Runnable arguments for GDM
+                <<: *scripts-args
+            - parallel:
+                - step:
+                    <<: *deploy
+                    name: Deploy to VirtualTrailer
+                    deployment: VirtualTrailer
+                - step:
+                    <<: *deploy
+                    name: Deploy to YYC
+                    deployment: YYC
+                - step:
+                    <<: *deploy
+                    name: Deploy to YYZ
+                    deployment: YYZ
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-01
+                    deployment: Toti-01
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-02
+                    deployment: Toti-02
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-03
+                    deployment: Toti-03
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-04
+                    deployment: Toti-04
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-05
+                    deployment: Toti-05
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-06
+                    deployment: Toti-06
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-07
+                    deployment: Toti-07
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-08
+                    deployment: Toti-08
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-09
+                    deployment: Toti-09
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-10
+                    deployment: Toti-10
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-11
+                    deployment: Toti-11
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-12
+                    deployment: Toti-12
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-13
+                    deployment: Toti-13
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-14
+                    deployment: Toti-14
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-15
+                    deployment: Toti-15
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-16
+                    deployment: Toti-16
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-17
+                    deployment: Toti-17
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-18
+                    deployment: Toti-18
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-19
+                    deployment: Toti-19
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-20
+                    deployment: Toti-20
+                - step:
+                    <<: *deploy
+                    name: Deploy to TT-21
+                    deployment: Toti-21
+
+        prod1-TT-01: 
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+            - step:
+                name: Build prod1
+                <<: *build
+            - step:
+                name: Populate Runnable arguments for GDM
+                <<: *scripts-args
+            - step:
+                <<: *deploy
+                name: Deploy to TT-01
+                deployment: Toti-01
+
+        prod1-TT-02: 
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+            - step:
+                name: Build prod1
+                <<: *build
+            - step:
+                name: Populate Runnable arguments for GDM
+                <<: *scripts-args
+            - step:
+                <<: *deploy
+                name: Deploy to TT-02
+                deployment: Toti-02
+
+        prod1-TT-03: 
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+            - step:
+                name: Build prod1
+                <<: *build
+            - step:
+                name: Populate Runnable arguments for GDM
+                <<: *scripts-args
+            - step:
+                <<: *deploy
+                name: Deploy to TT-03
+                deployment: Toti-03
+
+        prod1-TT-04: 
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+            - step:
+                name: Build prod1
+                <<: *build
+            - step:
+                name: Populate Runnable arguments for GDM
+                <<: *scripts-args
+            - step:
+                <<: *deploy
+                name: Deploy to TT-04
+                deployment: Toti-04
+
+        prod1-TT-05: 
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+            - step:
+                name: Build prod1
+                <<: *build
+            - step:
+                name: Populate Runnable arguments for GDM
+                <<: *scripts-args
+            - step:
+                <<: *deploy
+                name: Deploy to TT-05
+                deployment: Toti-05
+
+        prod1-TT-06: 
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+            - step:
+                name: Build prod1
+                <<: *build
+            - step:
+                name: Populate Runnable arguments for GDM
+                <<: *scripts-args
+            - step:
+                <<: *deploy
+                name: Deploy to TT-06
+                deployment: Toti-06
+
+        prod1-TT-07: 
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+            - step:
+                name: Build prod1
+                <<: *build
+            - step:
+                name: Populate Runnable arguments for GDM
+                <<: *scripts-args
+            - step:
+                <<: *deploy
+                name: Deploy to TT-07
+                deployment: Toti-07
+
+        prod1-TT-08: 
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+            - step:
+                name: Build prod1
+                <<: *build
+            - step:
+                name: Populate Runnable arguments for GDM
+                <<: *scripts-args
+            - step:
+                <<: *deploy
+                name: Deploy to TT-08
+                deployment: Toti-08
+
+        prod1-TT-09: 
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+            - step:
+                name: Build prod1
+                <<: *build
+            - step:
+                name: Populate Runnable arguments for GDM
+                <<: *scripts-args
+            - step:
+                <<: *deploy
+                name: Deploy to TT-09
+                deployment: Toti-09
+
+        prod1-TT-10: 
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+            - step:
+                name: Build prod1
+                <<: *build
+            - step:
+                name: Populate Runnable arguments for GDM
+                <<: *scripts-args
+            - step:
+                <<: *deploy
+                name: Deploy to TT-10
+                deployment: Toti-10
+
+        prod1-TT-11: 
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+            - step:
+                name: Build prod1
+                <<: *build
+            - step:
+                name: Populate Runnable arguments for GDM
+                <<: *scripts-args
+            - step:
+                <<: *deploy
+                name: Deploy to TT-11
+                deployment: Toti-11
+
+        prod1-TT-12: 
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+            - step:
+                name: Build prod1
+                <<: *build
+            - step:
+                name: Populate Runnable arguments for GDM
+                <<: *scripts-args
+            - step:
+                <<: *deploy
+                name: Deploy to TT-12
+                deployment: Toti-12
+
+        prod1-TT-13: 
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+            - step:
+                name: Build prod1
+                <<: *build
+            - step:
+                name: Populate Runnable arguments for GDM
+                <<: *scripts-args
+            - step:
+                <<: *deploy
+                name: Deploy to TT-13
+                deployment: Toti-13
+
+        prod1-TT-14: 
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+            - step:
+                name: Build prod1
+                <<: *build
+            - step:
+                name: Populate Runnable arguments for GDM
+                <<: *scripts-args
+            - step:
+                <<: *deploy
+                name: Deploy to TT-14
+                deployment: Toti-14
+
+        prod1-TT-15: 
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+            - step:
+                name: Build prod1
+                <<: *build
+            - step:
+                name: Populate Runnable arguments for GDM
+                <<: *scripts-args
+            - step:
+                <<: *deploy
+                name: Deploy to TT-15
+                deployment: Toti-15
+
+        prod1-TT-16: 
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+            - step:
+                name: Build prod1
+                <<: *build
+            - step:
+                name: Populate Runnable arguments for GDM
+                <<: *scripts-args
+            - step:
+                <<: *deploy
+                name: Deploy to TT-16
+                deployment: Toti-16
+
+        prod1-TT-17: 
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+            - step:
+                name: Build prod1
+                <<: *build
+            - step:
+                name: Populate Runnable arguments for GDM
+                <<: *scripts-args
+            - step:
+                <<: *deploy
+                name: Deploy to TT-17
+                deployment: Toti-17
+
+        prod1-TT-18: 
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+            - step:
+                name: Build prod1
+                <<: *build
+            - step:
+                name: Populate Runnable arguments for GDM
+                <<: *scripts-args
+            - step:
+                <<: *deploy
+                name: Deploy to TT-18
+                deployment: Toti-18
+
+        prod1-TT-19: 
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+            - step:
+                name: Build prod1
+                <<: *build
+            - step:
+                name: Populate Runnable arguments for GDM
+                <<: *scripts-args
+            - step:
+                <<: *deploy
+                name: Deploy to TT-19
+                deployment: Toti-19
+
+        prod1-TT-20: 
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+            - step:
+                name: Build prod1
+                <<: *build
+            - step:
+                name: Populate Runnable arguments for GDM
+                <<: *scripts-args
+            - step:
+                <<: *deploy
+                name: Deploy to TT-20
+                deployment: Toti-20
+        
+        prod1-TT-21: 
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+            - step:
+                name: Build prod1
+                <<: *build
+            - step:
+                name: Populate Runnable arguments for GDM
+                <<: *scripts-args
+            - step:
+                <<: *deploy
+                name: Deploy to TT-21
+                deployment: Toti-21
+
+        prod1-VT:
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+            - step:
+                name: Build prod1
+                <<: *build
+            - step:
+                name: Populate Runnable arguments for GDM
+                <<: *scripts-args
+            - step:
+                <<: *deploy
+                name: Deploy to VT
+                deployment: VirtualTrailer
+
+        prod1-YYC:
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+            - step:
+                name: Build prod1
+                <<: *build
+            - step:
+                name: Populate Runnable arguments for GDM
+                <<: *scripts-args
+            - step:
+                <<: *deploy
+                name: Deploy to YYC
+                deployment: YYC 
+
+        prod1-YYZ:
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+            - step:
+                name: Build prod1
+                <<: *build
+            - step:
+                name: Populate Runnable arguments for GDM
+                <<: *scripts-args
+            - step:
+                <<: *deploy
+                name: Deploy to YYZ
+                deployment: YYZ
+
+        Legacy: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - parallel:
+                - step:
+                    <<: *deploy-prod1-rsync
+                    name: Deploy 103
+                    deployment: HQ103 
+                - step:
+                    <<: *deploy-prod1-rsync
+                    name: Deploy Toti-02
+                    deployment: Toti-02
+                - step:
+                    <<: *deploy-prod1-rsync
+                    name: Deploy Toti-03
+                    deployment: Toti-03
+                - step:
+                    <<: *deploy-prod1-rsync
+                    name: Deploy Toti-04
+                    deployment: Toti-04
+                - step:
+                    <<: *deploy-prod1-rsync
+                    name: Deploy Toti-05
+                    deployment: Toti-05
+                - step:
+                    <<: *deploy-prod1-rsync
+                    name: Deploy Toti-06
+                    deployment: Toti-06
+                - step:
+                    <<: *deploy-prod1-rsync
+                    name: Deploy TT-07
+                    deployment: Toti-07
+                - step:
+                    <<: *deploy-prod1-rsync
+                    name: Deploy Toti-08
+                    deployment: Toti-08
+                - step:
+                    <<: *deploy-prod1-rsync
+                    name: Deploy Toti-09
+                    deployment: Toti-09
+                - step:
+                    <<: *deploy-prod1-rsync
+                    name: Deploy Toti-10
+                    deployment: Toti-10
+                - step:
+                    <<: *deploy-prod1-rsync
+                    name: Deploy Toti-11
+                    deployment: Toti-11
+                - step:
+                    <<: *deploy-prod1-rsync
+                    name: Deploy Toti-12
+                    deployment: Toti-12
+                - step:
+                    <<: *deploy-prod1-rsync
+                    name: Deploy Toti-13
+                    deployment: Toti-13
+                - step:
+                    <<: *deploy-prod1-rsync
+                    name: Deploy Toti-14
+                    deployment: Toti-14
+                - step:
+                    <<: *deploy-prod1-rsync
+                    name: Deploy Toti-15
+                    deployment: Toti-15
+                - step:
+                    <<: *deploy-prod1-rsync
+                    name: Deploy Toti-16
+                    deployment: Toti-16
+                - step:
+                    <<: *deploy-prod1-rsync
+                    name: Deploy Toti-17
+                    deployment: Toti-17
+                - step:
+                    <<: *deploy-prod1-rsync
+                    name: Deploy Toti-18
+                    deployment: Toti-18  
+                - step:
+                    <<: *deploy-prod1-rsync
+                    name: Deploy Toti-19
+                    deployment: Toti-19  
+                - step:
+                    <<: *deploy-prod1-rsync
+                    name: Deploy Toti-20
+                    deployment: Toti-20 
+                - step:
+                    <<: *deploy-prod1-rsync
+                    name: Deploy YYZ
+                    deployment: YYZ
+        
+        Legacy-VT: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *deploy-prod1-rsync
+                name: Deploy VT
+                deployment: VirtualTrailer 
+
+        Legacy-YYC: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *deploy-prod1-rsync
+                name: Deploy YYC
+                deployment: YYC
+        
+        Legacy-YYZ: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *deploy-prod1-rsync
+                name: Deploy YYZ
+                deployment: YYZ
+        
+        Legacy-Toti-01: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *deploy-prod1-rsync
+                name: Deploy Toti-01
+                deployment: Toti-01
+
+        Legacy-Toti-02: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *deploy-prod1-rsync
+                name: Deploy Toti-02
+                deployment: Toti-02
+
+        Legacy-Toti-03: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *deploy-prod1-rsync
+                name: Deploy Toti-03
+                deployment: Toti-03
+
+        Legacy-Toti-04: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *deploy-prod1-rsync
+                name: Deploy Toti-04
+                deployment: Toti-04
+
+        Legacy-Toti-05: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *deploy-prod1-rsync
+                name: Deploy Toti-05
+                deployment: Toti-05
+
+        Legacy-Toti-06: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *deploy-prod1-rsync
+                name: Deploy Toti-06
+                deployment: Toti-06
+
+        Legacy-Toti-07: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *deploy-prod1-rsync
+                name: Deploy Toti-07
+                deployment: Toti-07
+
+        Legacy-Toti-08: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *deploy-prod1-rsync
+                name: Deploy Toti-08
+                deployment: Toti-08
+
+        Legacy-Toti-09: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *deploy-prod1-rsync
+                name: Deploy Toti-09
+                deployment: Toti-09
+
+        Legacy-Toti-10: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *deploy-prod1-rsync
+                name: Deploy Toti-10
+                deployment: Toti-10
+
+        Legacy-Toti-11: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *deploy-prod1-rsync
+                name: Deploy Toti-11
+                deployment: Toti-11
+
+        Legacy-Toti-12: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *deploy-prod1-rsync
+                name: Deploy Toti-12
+                deployment: Toti-12
+
+        Legacy-Toti-13: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *deploy-prod1-rsync
+                name: Deploy Toti-13
+                deployment: Toti-13
+
+        Legacy-Toti-14: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *deploy-prod1-rsync
+                name: Deploy Toti-14
+                deployment: Toti-14
+
+        Legacy-Toti-15: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *deploy-prod1-rsync
+                name: Deploy Toti-15
+                deployment: Toti-15
+
+        Legacy-Toti-16: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *deploy-prod1-rsync
+                name: Deploy Toti-16
+                deployment: Toti-16
+
+        Legacy-Toti-17: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *deploy-prod1-rsync
+                name: Deploy Toti-17
+                deployment: Toti-17
+
+        Legacy-Toti-18: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *deploy-prod1-rsync
+                name: Deploy Toti-18
+                deployment: Toti-18
+
+        Legacy-Toti-19: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *deploy-prod1-rsync
+                name: Deploy Toti-19
+                deployment: Toti-19
+
+        Legacy-Toti-20: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *deploy-prod1-rsync
+                name: Deploy Toti-20
+                deployment: Toti-20
+
+        Vault:
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - parallel:
+                - step:
+                    <<: *deploy-vault
+                    name: Deploy to VirtualTrailer
+                    deployment: VirtualTrailer
+                - step:
+                    <<: *deploy-vault
+                    name: Deploy to YYC
+                    deployment: YYC
+                - step:
+                    <<: *deploy-vault
+                    name: Deploy to YYZ
+                    deployment: YYZ
+                - step:
+                    <<: *deploy-vault
+                    name: Deploy to TT-01
+                    deployment: Toti-01
+                - step:
+                    <<: *deploy-vault
+                    name: Deploy to TT-02
+                    deployment: Toti-02
+                - step:
+                    <<: *deploy-vault
+                    name: Deploy to TT-03
+                    deployment: Toti-03
+                - step:
+                    <<: *deploy-vault
+                    name: Deploy to TT-04
+                    deployment: Toti-04
+                - step:
+                    <<: *deploy-vault
+                    name: Deploy to TT-05
+                    deployment: Toti-05
+                - step:
+                    <<: *deploy-vault
+                    name: Deploy to TT-06
+                    deployment: Toti-06
+                - step:
+                    <<: *deploy-vault
+                    name: Deploy to TT-07
+                    deployment: Toti-07
+                - step:
+                    <<: *deploy-vault
+                    name: Deploy to TT-08
+                    deployment: Toti-08
+                - step:
+                    <<: *deploy-vault
+                    name: Deploy to TT-09
+                    deployment: Toti-09
+                - step:
+                    <<: *deploy-vault
+                    name: Deploy to TT-10
+                    deployment: Toti-10
+                - step:
+                    <<: *deploy-vault
+                    name: Deploy to TT-11
+                    deployment: Toti-11
+                - step:
+                    <<: *deploy-vault
+                    name: Deploy to TT-12
+                    deployment: Toti-12
+                - step:
+                    <<: *deploy-vault
+                    name: Deploy to TT-13
+                    deployment: Toti-13
+                - step:
+                    <<: *deploy-vault
+                    name: Deploy to TT-14
+                    deployment: Toti-14
+                - step:
+                    <<: *deploy-vault
+                    name: Deploy to TT-15
+                    deployment: Toti-15
+                - step:
+                    <<: *deploy-vault
+                    name: Deploy to TT-16
+                    deployment: Toti-16
+                - step:
+                    <<: *deploy-vault
+                    name: Deploy to TT-17
+                    deployment: Toti-17
+                - step:
+                    <<: *deploy-vault
+                    name: Deploy to TT-18
+                    deployment: Toti-18
+                - step:
+                    <<: *deploy-vault
+                    name: Deploy to TT-19
+                    deployment: Toti-19
+                - step:
+                    <<: *deploy-vault
+                    name: Deploy to TT-20
+                    deployment: Toti-20
+                - step:
+                    <<: *deploy-vault
+                    name: Deploy to TT-21
+                    deployment: Toti-21
+
+        Vault-VT: 
+            - step:
+                <<: *deploy-vault
+                name: Deploy Vault
+                deployment: VirtualTrailer
+
+        Vault-YYC:
+            - step:
+                <<: *deploy-vault
+                name: Deploy Vault
+                deployment: YYC 
+
+        Vault-YYZ:
+            - step:
+                <<: *deploy-vault
+                name: Deploy Vault
+                deployment: YYZ
+
+        Vault-TT-01: 
+            - step:
+                <<: *deploy-vault
+                name: Deploy Vault
+                deployment: Toti-01
+
+        Vault-TT-02: 
+            - step:
+                <<: *deploy-vault
+                name: Deploy Vault
+                deployment: Toti-02
+
+        Vault-TT-03: 
+            - step:
+                <<: *deploy-vault
+                name: Deploy Vault
+                deployment: Toti-03
+
+        Vault-TT-04: 
+            - step:
+                <<: *deploy-vault
+                name: Deploy Vault
+                deployment: Toti-04
+
+        Vault-TT-05: 
+            - step:
+                <<: *deploy-vault
+                name: Deploy Vault
+                deployment: Toti-05
+
+        Vault-TT-06: 
+            - step:
+                <<: *deploy-vault
+                name: Deploy Vault
+                deployment: Toti-06
+
+        Vault-TT-07: 
+            - step:
+                <<: *deploy-vault
+                name: Deploy Vault
+                deployment: Toti-07
+
+        Vault-TT-08: 
+            - step:
+                <<: *deploy-vault
+                name: Deploy Vault
+                deployment: Toti-08
+
+        Vault-TT-09: 
+            - step:
+                <<: *deploy-vault
+                name: Deploy Vault
+                deployment: Toti-09
+
+        Vault-TT-10: 
+            - step:
+                <<: *deploy-vault
+                name: Deploy Vault
+                deployment: Toti-10
+
+        Vault-TT-11: 
+            - step:
+                <<: *deploy-vault
+                name: Deploy Vault
+                deployment: Toti-11
+
+        Vault-TT-12: 
+            - step:
+                <<: *deploy-vault
+                name: Deploy Vault
+                deployment: Toti-12
+
+        Vault-TT-13: 
+            - step:
+                <<: *deploy-vault
+                name: Deploy Vault
+                deployment: Toti-13
+
+        Vault-TT-14: 
+            - step:
+                <<: *deploy-vault
+                name: Deploy Vault
+                deployment: Toti-14
+
+        Vault-TT-15: 
+            - step:
+                <<: *deploy-vault
+                name: Deploy Vault
+                deployment: Toti-15
+
+        Vault-TT-16: 
+            - step:
+                <<: *deploy-vault
+                name: Deploy Vault
+                deployment: Toti-16
+
+        Vault-TT-17: 
+            - step:
+                <<: *deploy-vault
+                name: Deploy Vault
+                deployment: Toti-17
+
+        Vault-TT-18: 
+            - step:
+                <<: *deploy-vault
+                name: Deploy Vault
+                deployment: Toti-18
+
+        Vault-TT-19: 
+            - step:
+                <<: *deploy-vault
+                name: Deploy Vault
+                deployment: Toti-19
+
+        Vault-TT-20: 
+            - step:
+                <<: *deploy-vault
+                name: Deploy Vault
+                deployment: Toti-20
+        
+        Vault-TT-21: 
+            - step:
+                <<: *deploy-vault
+                name: Deploy Vault
+                deployment: Toti-20
+        
+        Rollout: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - parallel:
+                - step:
+                    <<: *rollout
+                    name: Rollout YYC
+                    deployment: YYC
+                - step:
+                    <<: *rollout
+                    name: Rollout YYZ
+                    deployment: YYZ
+                - step:
+                    <<: *rollout
+                    name: Rollout VirtualTrailer
+                    deployment: VirtualTrailer
+                - step:
+                    <<: *rollout
+                    name: Rollout Toti-01
+                    deployment: Toti-01
+                - step:
+                    <<: *rollout
+                    name: Rollout Toti-02
+                    deployment: Toti-02
+                - step:
+                    <<: *rollout
+                    name: Rollout Toti-03
+                    deployment: Toti-03
+                - step:
+                    <<: *rollout
+                    name: Rollout Toti-04
+                    deployment: Toti-04
+                - step:
+                    <<: *rollout
+                    name: Rollout Toti-05
+                    deployment: Toti-05
+                - step:
+                    <<: *rollout
+                    name: Rollout Toti-06
+                    deployment: Toti-06
+                - step:
+                    <<: *rollout
+                    name: Rollout TT-07
+                    deployment: Toti-07
+                - step:
+                    <<: *rollout
+                    name: Rollout Toti-08
+                    deployment: Toti-08
+                - step:
+                    <<: *rollout
+                    name: Rollout Toti-09
+                    deployment: Toti-09
+                - step:
+                    <<: *rollout
+                    name: Rollout Toti-10
+                    deployment: Toti-10
+                - step:
+                    <<: *rollout
+                    name: Rollout Toti-11
+                    deployment: Toti-11
+                - step:
+                    <<: *rollout
+                    name: Rollout Toti-12
+                    deployment: Toti-12
+                - step:
+                    <<: *rollout
+                    name: Rollout Toti-13
+                    deployment: Toti-13
+                - step:
+                    <<: *rollout
+                    name: Rollout Toti-14
+                    deployment: Toti-14
+                - step:
+                    <<: *rollout
+                    name: Rollout Toti-15
+                    deployment: Toti-15
+                - step:
+                    <<: *rollout
+                    name: Rollout Toti-16
+                    deployment: Toti-16
+                - step:
+                    <<: *rollout
+                    name: Rollout Toti-17
+                    deployment: Toti-17
+                - step:
+                    <<: *rollout
+                    name: Rollout Toti-18
+                    deployment: Toti-18  
+                - step:
+                    <<: *rollout
+                    name: Rollout Toti-19
+                    deployment: Toti-19  
+                - step:
+                    <<: *rollout
+                    name: Rollout Toti-20
+                    deployment: Toti-20
+                - step:
+                    <<: *rollout
+                    name: Rollout Toti-21
+                    deployment: Toti-21
+        
+        Rollout-YYC: 
+                    - step:
+                        <<: *unit-tests
+                        name: Running unit tests
+                    - step:
+                        <<: *rollout
+                        name: Rollout YYC
+                        deployment: YYC
+
+        Rollout-YYZ: 
+                    - step:
+                        <<: *unit-tests
+                        name: Running unit tests
+                    - step:
+                        <<: *rollout
+                        name: Rollout YYZ
+                        deployment: YYZ
+
+        Rollout-VT: 
+                    - step:
+                        <<: *unit-tests
+                        name: Running unit tests
+                    - step:
+                        <<: *rollout
+                        name: Rollout VT
+                        deployment: VirtualTrailer
+        
+        Rollout-Toti-01: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollout
+                name: Rollout Toti-01
+                deployment: Toti-01
+
+        Rollout-Toti-02: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollout
+                name: Rollout Toti-02
+                deployment: Toti-02
+
+        Rollout-Toti-03: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollout
+                name: Rollout Toti-03
+                deployment: Toti-03
+
+        Rollout-Toti-04: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollout
+                name: Rollout Toti-04
+                deployment: Toti-04
+
+        Rollout-Toti-05: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollout
+                name: Rollout Toti-05
+                deployment: Toti-05
+
+        Rollout-Toti-06: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollout
+                name: Rollout Toti-06
+                deployment: Toti-06
+
+        Rollout-Toti-07: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollout
+                name: Rollout Toti-07
+                deployment: Toti-07
+
+        Rollout-Toti-08: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollout
+                name: Rollout Toti-08
+                deployment: Toti-08
+
+        Rollout-Toti-09: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollout
+                name: Rollout Toti-09
+                deployment: Toti-09
+
+        Rollout-Toti-10: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollout
+                name: Rollout Toti-10
+                deployment: Toti-10
+
+        Rollout-Toti-11: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollout
+                name: Rollout Toti-11
+                deployment: Toti-11
+
+        Rollout-Toti-12: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollout
+                name: Rollout Toti-12
+                deployment: Toti-12
+
+        Rollout-Toti-13: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollout
+                name: Rollout Toti-13
+                deployment: Toti-13
+
+        Rollout-Toti-14: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollout
+                name: Rollout Toti-14
+                deployment: Toti-14
+
+        Rollout-Toti-15: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollout
+                name: Rollout Toti-15
+                deployment: Toti-15
+
+        Rollout-Toti-16: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollout
+                name: Rollout Toti-16
+                deployment: Toti-16
+
+        Rollout-Toti-17: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollout
+                name: Rollout Toti-17
+                deployment: Toti-17
+
+        Rollout-Toti-18: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollout
+                name: Rollout Toti-18
+                deployment: Toti-18
+
+        Rollout-Toti-19: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollout
+                name: Rollout Toti-19
+                deployment: Toti-19
+
+        Rollout-Toti-20: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollout
+                name: Rollout Toti-20
+                deployment: Toti-20
+        Rollout-Toti-21: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollout
+                name: Rollout Toti-21
+                deployment: Toti-21
+
+
+
+        Rollback: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - parallel:
+                - step:
+                    <<: *rollback
+                    name: Rollback VT
+                    deployment: VirtualTrailer
+                - step:
+                    <<: *rollback
+                    name: Rollback YYC
+                    deployment: YYC
+                - step:
+                    <<: *rollback
+                    name: Rollback YYZ
+                    deployment: YYZ
+                - step:
+                    <<: *rollback
+                    name: Rollback Toti-01
+                    deployment: Toti-01
+                - step:
+                    <<: *rollback
+                    name: Rollback Toti-02
+                    deployment: Toti-02
+                - step:
+                    <<: *rollback
+                    name: Rollback Toti-03
+                    deployment: Toti-03
+                - step:
+                    <<: *rollback
+                    name: Rollback Toti-04
+                    deployment: Toti-04
+                - step:
+                    <<: *rollback
+                    name: Rollback Toti-05
+                    deployment: Toti-05
+                - step:
+                    <<: *rollback
+                    name: Rollback Toti-06
+                    deployment: Toti-06
+                - step:
+                    <<: *rollback
+                    name: Rollback Toti-07
+                    deployment: Toti-07
+                - step:
+                    <<: *rollback
+                    name: Rollback Toti-08
+                    deployment: Toti-08
+                - step:
+                    <<: *rollback
+                    name: Rollback Toti-09
+                    deployment: Toti-09
+                - step:
+                    <<: *rollback
+                    name: Rollback Toti-10
+                    deployment: Toti-10
+                - step:
+                    <<: *rollback
+                    name: Rollback Toti-11
+                    deployment: Toti-11
+                - step:
+                    <<: *rollback
+                    name: Rollback Toti-12
+                    deployment: Toti-12
+                - step:
+                    <<: *rollback
+                    name: Rollback Toti-13
+                    deployment: Toti-13
+                - step:
+                    <<: *rollback
+                    name: Rollback Toti-14
+                    deployment: Toti-14
+                - step:
+                    <<: *rollback
+                    name: Rollback Toti-15
+                    deployment: Toti-15
+                - step:
+                    <<: *rollback
+                    name: Rollback Toti-16
+                    deployment: Toti-16
+                - step:
+                    <<: *rollback
+                    name: Rollback Toti-17
+                    deployment: Toti-17
+                - step:
+                    <<: *rollback
+                    name: Rollback Toti-18
+                    deployment: Toti-18  
+                - step:
+                    <<: *rollback
+                    name: Rollback Toti-19
+                    deployment: Toti-19  
+                - step:
+                    <<: *rollback
+                    name: Rollback Toti-20
+                    deployment: Toti-20 
+                - step:
+                    <<: *rollback
+                    name: Rollback Toti-21
+                    deployment: Toti-21
+        
+        Rollback-VT: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollback
+                name: Rollback VT
+                deployment: VirtualTrailer
+        
+        Rollback-YYC: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollback
+                name: Rollback YYC
+                deployment: YYC 
+
+        Rollback-YYZ: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollback
+                name: Rollback YYZ
+                deployment: YYZ
+        
+        Rollback-Toti-01: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollback
+                name: Rollback Toti-01
+                deployment: Toti-01
+
+        Rollback-Toti-02: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollback
+                name: Rollback Toti-02
+                deployment: Toti-02
+
+        Rollback-Toti-03: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollback
+                name: Rollback Toti-03
+                deployment: Toti-03
+
+        Rollback-Toti-04: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollback
+                name: Rollback Toti-04
+                deployment: Toti-04
+
+        Rollback-Toti-05: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollback
+                name: Rollback Toti-05
+                deployment: Toti-05
+
+        Rollback-Toti-06: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollback
+                name: Rollback Toti-06
+                deployment: Toti-06
+
+        Rollback-Toti-07: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollback
+                name: Rollback Toti-07
+                deployment: Toti-07
+
+        Rollback-Toti-08: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollback
+                name: Rollback Toti-08
+                deployment: Toti-08
+
+        Rollback-Toti-09: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollback
+                name: Rollback Toti-09
+                deployment: Toti-09
+
+        Rollback-Toti-10: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollback
+                name: Rollback Toti-10
+                deployment: Toti-10
+
+        Rollback-Toti-11: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollback
+                name: Rollback Toti-11
+                deployment: Toti-11
+
+        Rollback-Toti-12: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollback
+                name: Rollback Toti-12
+                deployment: Toti-12
+
+        Rollback-Toti-13: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollback
+                name: Rollback Toti-13
+                deployment: Toti-13
+
+        Rollback-Toti-14: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollback
+                name: Rollback Toti-14
+                deployment: Toti-14
+
+        Rollback-Toti-15: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollback
+                name: Rollback Toti-15
+                deployment: Toti-15
+
+        Rollback-Toti-16: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollback
+                name: Rollback Toti-16
+                deployment: Toti-16
+
+        Rollback-Toti-17: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollback
+                name: Rollback Toti-17
+                deployment: Toti-17
+
+        Rollback-Toti-18: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollback
+                name: Rollback Toti-18
+                deployment: Toti-18
+
+        Rollback-Toti-19: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollback
+                name: Rollback Toti-19
+                deployment: Toti-19
+
+        Rollback-Toti-20: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollback
+                name: Rollback Toti-20
+                deployment: Toti-20
+        
+        Rollback-Toti-21: 
+            - step:
+                <<: *unit-tests
+                name: Running unit tests
+            - step:
+                <<: *rollback
+                name: Rollback Toti-21
+                deployment: Toti-21
+
+
+    pull-requests:
+        feature/*:
+            - step:
+                name: Build for feature branch pull request
+                runs-on:
+                    - windows
+                script:
+                    - echo "Hello, feature branch PR!"
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+
+        hotfix/*:
+            - step:
+                name: Build for hotfix branch pull request
+                runs-on:
+                    - windows
+                script:
+                    - echo "Hello, hotfix PR!"
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+
+        release/*:
+            - step:
+                name: Build for release branch pull request
+                runs-on:
+                    - winrunner
+                    - windows
+                    - self.hosted
+                script:
+                    - echo "Hello, Release R!"
+                    - $netConnectionObj = Test-NetConnection -ComputerName 192.168.1.105 -InformationLevel "Detailed"
+                    - $ifConnectionFound = $null -ne $netConnectionObj
+                    - $ifPingSuccessful = $netConnectionObj.PingSucceeded -eq $true
+                    - $Env:DEVICE_AVAILABLE = $ifConnectionFound -and $ifPingSuccessful
+                    - Write-Host $Env:DEVICE_AVAILABLE
+                    - Write-Host $Env:BITBUCKET_PR_DESTINATION_BRANCH
+                    - Write-Host $Env:BITBUCKET_PR_DESTINATION_COMMIT
+                    - Write-Host $Env:BITBUCKET_PR_ID
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+                    
+        '**':
+            - step:
+                name: Build for all other pull requests
+                runs-on:
+                    - windows
+                script:
+                    - echo "Hello, non-feature, non-hotfix pull request!"
+            - step:
+                name: Unit testing
+                <<: *unit-tests
+
+        '*':
+            - step:
+                name: Build for all pull requests
+                runs-on:
+                    - windows
+                script:
+                    - echo "Hello, EVERY pull request!"
+            - step:
+                name: Unit testing
+                <<: *unit-tests

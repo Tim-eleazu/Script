@@ -1,0 +1,21 @@
+Script Description
+This script is designed to delete log files in specified directories on NAS (Network Attached Storage) devices that are older than 180 days. The script retries the deletion up to 10 times with a delay of 5 seconds between attempts if it encounters any issues.
+
+Key Components:
+Author and Dates: Includes author name, creation date, and last modification date.
+Description: Briefly describes the script's purpose.
+Directories List: An array of directories on NAS devices where log files are located.
+Log Filename: Specifies the absolute path for the log file where deletion results are recorded.
+Retry Mechanism: Defines the number of retry attempts and the delay between retries.
+Function delete_file_with_retry:
+Takes a file path, retry count, and retry delay as arguments.
+Attempts to delete the file and retries if the deletion fails.
+Logs the result of each deletion attempt to the specified log file.
+Main Loop:
+Iterates through each directory in the list.
+Uses find to identify directories older than 180 days.
+Matches directories with a specific naming pattern using regex.
+Attempts to delete matching directories using the delete_file_with_retry function.
+Notable Comment:
+The ls -l "$source_file" line is commented out. This line, if uncommented, would list detailed information about the file or directory, which can be useful for debugging or verifying the existence and properties of the file before attempting deletion.
+Overall, this script is a robust solution for cleaning up old log files from multiple NAS directories with a built-in retry mechanism to handle transient issues during deletion attempts.

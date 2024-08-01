@@ -1,0 +1,75 @@
+options:
+  max-time: 120
+
+definitions:
+  steps:
+    - step: &triggerpipeline
+        name: Trigger Pipeline 
+        max-time: 120
+        runs-on:
+          - winrunner
+          - windows
+          - self.hosted
+        script:
+          - Write-Host $Env:BITBUCKET_PIPELINE_UUID
+          - cd $Env:BITBUCKET_CLONE_DIR
+          - python -m venv venv
+          - .\venv\Scripts\activate
+          - pip install -r .\requirements.txt 
+          - Write-Host $Env:Trailer 
+          - Write-Host $Env:Repository
+          - Write-Host $Env:Branch
+          - python config_trigger.py -Trailer $Env:Trailer -Repository $Env:Repository -Branch $Env:Branch
+          - deactivate
+          - Remove-Item -Recurse -Force .\venv
+
+pipelines:
+  custom: 
+    ConfigureTrailer: 
+      GEOAI-ECOSYSTEM:
+        - variables:
+            - name: Trailer
+              default: VT-01
+              description: "Pick a trailer:"
+              allowed-values:
+                - YYC-01
+                - YYZ-01
+                - VT-01
+                - MU-01
+                - MU-02
+                - MU-03
+                - MU-04
+                - MU-05
+                - MU-06
+                - MU-07
+                - MU-08
+                - MU-09
+                - MU-10
+                - MU-11
+                - MU-12
+                - MU-13
+                - MU-14
+                - MU-15
+                - MU-16
+                - MU-17
+                - MU-18
+                - MU-19
+                - MU-20 
+                - MU-21
+                - MU-22
+            - name: Repository
+              default: GEOAIPROCESSING
+              description: "GEOAI-ECOSYSTEM repositories (GEOAIPROCESSING, GEOAITOOLS, GEOALCHEMY, or ENTIREPIPELINE):"
+              allowed-values:
+                - GEOAIPROCESSING
+                - GEOAITOOLS
+                - GEOALCHEMY
+                - ENTIREPIPELINE 
+            - name: Branch
+              default: apifunction
+              description: "Branch to run on"
+              allowed-values:
+                - apifunction
+                - Production
+        - step: 
+            <<: *triggerpipeline

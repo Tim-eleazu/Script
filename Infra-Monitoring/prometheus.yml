@@ -1,0 +1,477 @@
+# my global config
+global:
+  scrape_interval: 15s # Set the scrape interval to every 15 seconds. Default is every 1 minute.
+  evaluation_interval: 15s # Evaluate rules every 15 seconds. The default is every 1 minute.
+  # scrape_timeout is set to the global default (10s).
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+           - 197.1.1.1:9093
+
+# Load rules once and periodically evaluate them according to the global 'evaluation_interval'.
+rule_files:
+   - "/etc/prometheus/rules/myrules.yml"
+
+# A scrape configuration containing exactly one endpoint to scrape:
+# Here it's Prometheus itself.
+scrape_configs:
+  # The job name is added as a label `job=<job_name>` to any timeseries scraped from this config.
+  - job_name: "prometheus"
+
+    # metrics_path defaults to '/metrics'
+    # scheme defaults to 'http'.
+
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: 'snmp-synology'
+    metrics_path: /snmp
+    params:
+      module: [synology]  # Use the module name as defined in your snmp_exporter's snmp.yml
+    static_configs:
+      - targets:
+        - st-01-STORAGE
+        - STORAGE12BAY
+        - SYN8BAY
+        - TE-03-STORAGE
+        - TE-04-STORAGE
+        - TE-05-STORAGE
+        - TE-07-STORAGE
+        - TE-08-STORAGE
+        - TE-09-STORAGE
+        - TE-12-STORAGE
+        - TE-13-STORAGE
+        - TE-16-STORAGE
+        - TE-19-STORAGE  # Target IP address of your Synology NAS
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 197.1.1.1:9116  # The address and port of your SNMP Exporter
+
+  # VT-NODES
+  - job_name: 'VT-NODES'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['st-01-node-01:9182', 'st-01-node-01:9835',
+                  'st-01-node-02:9182', 'st-01-node-02:9835',
+                  'st-01-node-03:9182', 'st-01-node-03:9835',
+                  'st-01-node-04:9182', 'st-01-node-04:9835',
+                  'st-01-node-05:9182', 'st-01-node-05:9835',
+                  'st-01-node-06:9182', 'st-01-node-06:9835',
+                  'st-01-node-07:9182', 'st-01-node-07:9835']
+        labels:
+          group: 'st-01-nodes'
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '(st-01-node-[0-9]+):.*'
+        target_label: 'host'
+      - source_labels: [__address__]
+        regex: '.*:(9182)'
+        target_label: 'exporter'
+        replacement: 'wm'
+      - source_labels: [__address__]
+        regex: '.*:(9835)'
+        target_label: 'exporter'
+        replacement: 'nv'
+
+  #TE-03
+  - job_name: 'TE-03'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['TE-03-NODE-02:9182', 'TE-03-NODE-02:9835',
+                  'TE-03-NODE-03:9182', 'TE-03-NODE-03:9835',
+                  'TE-03-NODE-04:9182', 'TE-03-NODE-04:9835',
+                  'TE-03-NODE-05:9182', 'TE-03-NODE-05:9835',
+                  'TE-03-NODE-06:9182', 'TE-03-NODE-06:9835']
+        labels:
+          group: 'TE-03-nodes'
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '(TE-03-NODE-0[2-6]):.*'
+        target_label: 'instance'
+      - source_labels: [__address__]
+        regex: '.*:(9182)'
+        target_label: 'exporter'
+        replacement: 'wm'
+      - source_labels: [__address__]
+        regex: '.*:(9835)'
+        target_label: 'exporter'
+        replacement: 'nv'
+    # TE-05
+  - job_name: 'TE-05'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['TE-05-NODE-02:9182', 'TE-05-NODE-02:9835',
+                  'TE-05-NODE-03:9182', 'TE-05-NODE-03:9835',
+                  'TE-05-NODE-04:9182', 'TE-05-NODE-04:9835',
+                  'TE-05-NODE-05:9182', 'TE-05-NODE-05:9835',
+                  'TE-05-NODE-06:9182', 'TE-05-NODE-06:9835',
+                  'TE-05-NODE-07:9182', 'TE-05-NODE-07:9835']
+        labels:
+          group: 'TE-05-nodes'
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '(TE-05-NODE-0[2-7]):.*'
+        target_label: 'instance'
+      - source_labels: [__address__]
+        regex: '.*:(9182)'
+        target_label: 'exporter'
+        replacement: 'wm'
+      - source_labels: [__address__]
+        regex: '.*:(9835)'
+        target_label: 'exporter'
+        replacement: 'nv'
+
+    #TE-06
+  - job_name: 'TE-06'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['TE-06-NODE-02:9182', 'TE-06-NODE-02:9835',
+                  'TE-06-NODE-03:9182', 'TE-06-NODE-03:9835',
+                  'TE-06-NODE-04:9182', 'TE-06-NODE-04:9835',
+                  'TE-06-NODE-05:9182', 'TE-06-NODE-05:9835',
+                  'TE-06-NODE-06:9182', 'TE-06-NODE-06:9835',
+                  'TE-06-NODE-07:9182', 'TE-06-NODE-07:9835']
+        labels:
+          group: 'TE-06-nodes'
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '(TE-06-NODE-0[2-7]):.*'
+        target_label: 'instance'
+      - source_labels: [__address__]
+        regex: '.*:(9182)'
+        target_label: 'exporter'
+        replacement: 'wm'
+      - source_labels: [__address__]
+        regex: '.*:(9835)'
+        target_label: 'exporter'
+        replacement: 'nv'
+
+    # TE-07
+  - job_name: 'TE-07'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['TE-07-NODE-02:9182', 'TE-07-NODE-02:9835',
+                  'TE-07-NODE-03:9182', 'TE-07-NODE-03:9835',
+                  'TE-07-NODE-04:9182', 'TE-07-NODE-04:9835',
+                  'TE-07-NODE-05:9182', 'TE-07-NODE-05:9835',
+                  'TE-07-NODE-08:9182', 'TE-07-NODE-08:9835',
+                  'TE-07-NODE-09:9182', 'TE-07-NODE-09:9835']
+        labels:
+          group: 'TE-07-nodes'
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '(TE-07-NODE-0[2-359]):.*'
+        target_label: 'instance'
+      - source_labels: [__address__]
+        regex: '.*:(9182)'
+        target_label: 'exporter'
+        replacement: 'wm'
+      - source_labels: [__address__]
+        regex: '.*:(9835)'
+        target_label: 'exporter'
+        replacement: 'nv'
+
+        #TE-08
+  - job_name: 'TE-08'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['TE-08-NODE-02:9182', 'TE-08-NODE-02:9835',
+                  'TE-08-NODE-03:9182', 'TE-08-NODE-03:9835',
+                  'TE-08-NODE-04:9182', 'TE-08-NODE-04:9835',
+                  'TE-08-NODE-04:9182', 'TE-08-NODE-05:9835',
+                  'TE-08-NODE-06:9182', 'TE-08-NODE-06:9835',
+                  'TE-08-NODE-07:9182', 'TE-08-NODE-07:9835']
+        labels:
+          group: 'TE-08-nodes'
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '(TE-08-NODE-0[2-8]):.*'
+        target_label: 'instance'
+      - source_labels: [__address__]
+        regex: '.*:(9182)'
+        target_label: 'exporter'
+        replacement: 'wm'
+      - source_labels: [__address__]
+        regex: '.*:(9835)'
+        target_label: 'exporter'
+        replacement: 'nv'
+
+        # TE-09
+  - job_name: 'TE-09'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['TE-09-NODE-02:9182', 'TE-09-NODE-02:9835',
+                  'TE-09-NODE-03:9182', 'TE-09-NODE-03:9835',
+                  'TE-09-NODE-04:9182', 'TE-09-NODE-04:9835',
+                  'TE-09-NODE-05:9182', 'TE-09-NODE-05:9835',
+                  'TE-09-NODE-06:9182', 'TE-09-NODE-06:9835',
+                  'TE-09-NODE-07:9182', 'TE-09-NODE-07:9835']
+        labels:
+          group: 'TE-09-nodes'
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '(TE-09-NODE-0[2-57]):.*'
+        target_label: 'instance'
+      - source_labels: [__address__]
+        regex: '.*:(9182)'
+        target_label: 'exporter'
+        replacement: 'wm'
+      - source_labels: [__address__]
+        regex: '.*:(9835)'
+        target_label: 'exporter'
+        replacement: 'nv'
+
+    # TE-10
+  - job_name: 'TE-10'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['TE-10-NODE-02:9182', 'TE-10-NODE-02:9835',
+                  'TE-10-NODE-03:9182', 'TE-10-NODE-03:9835',
+                  'TE-10-NODE-04:9182', 'TE-10-NODE-04:9835',
+                  'TE-10-NODE-05:9182', 'TE-10-NODE-05:9835',
+                  'TE-10-NODE-06:9182', 'TE-10-NODE-06:9835',
+                  'TE-10-NODE-07:9182', 'TE-10-NODE-07:9835']
+        labels:
+          group: 'TE-10-nodes'
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '(TE-10-NODE-0[2-9]):.*'
+        target_label: 'instance'
+      - source_labels: [__address__]
+        regex: '.*:(9182)'
+        target_label: 'exporter'
+        replacement: 'wm'
+      - source_labels: [__address__]
+        regex: '.*:(9835)'
+        target_label: 'exporter'
+        replacement: 'nv'
+
+      #TE-11
+  - job_name: 'TE-11'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['TE-11-NODE-02:9182', 'TE-11-NODE-02:9835',
+                  'TE-11-NODE-03:9182', 'TE-11-NODE-03:9835',
+                  'TE-11-NODE-04:9182', 'TE-11-NODE-04:9835',
+                  'TE-11-NODE-05:9182', 'TE-11-NODE-05:9835',
+                  'TE-11-NODE-06:9182', 'TE-11-NODE-06:9835']
+        labels:
+          group: 'TE-11-nodes'
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '(TE-11-NODE-0[2-7]):.*'
+        target_label: 'instance'
+      - source_labels: [__address__]
+        regex: '.*:(9182)'
+        target_label: 'exporter'
+        replacement: 'wm'
+      - source_labels: [__address__]
+        regex: '.*:(9835)'
+        target_label: 'exporter'
+        replacement: 'nv'
+
+    #TE-12
+  - job_name: 'TE-12'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['TE-12-NODE-02:9182', 'TE-12-NODE-02:9835',
+                  'TE-12-NODE-03:9182', 'TE-12-NODE-03:9835',
+                  'TE-12-NODE-04:9182', 'TE-12-NODE-04:9835',
+                  'TE-12-NODE-05:9182', 'TE-12-NODE-05:9835',
+                  'TE-12-NODE-06:9182', 'TE-12-NODE-06:9835',
+                  'TE-12-NODE-07:9182', 'TE-12-NODE-07:9835']
+        labels:
+          group: 'TE-12-nodes'
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '(TE-12-NODE-0[2-7]):.*'
+        target_label: 'instance'
+      - source_labels: [__address__]
+        regex: '.*:(9182)'
+        target_label: 'exporter'
+        replacement: 'wm'
+      - source_labels: [__address__]
+        regex: '.*:(9835)'
+        target_label: 'exporter'
+        replacement: 'nv'
+
+    #TE-13
+  - job_name: 'TE-13'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['TE-13-NODE-02:9182', 'TE-13-NODE-02:9835',
+                  'TE-13-NODE-03:9182', 'TE-13-NODE-03:9835',
+                  'TE-13-NODE-04:9182', 'TE-13-NODE-04:9835',
+                  'TE-13-NODE-05:9182', 'TE-13-NODE-05:9835',
+                  'TE-13-NODE-06:9182', 'TE-13-NODE-06:9835',
+                  'TE-13-NODE-09:9182', 'TE-13-NODE-09:9835']
+        labels:
+          group: 'TE-13-nodes'
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '(TE-13-NODE-0[2-6]|TE-13-NODE-09):.*'
+        target_label: 'instance'
+      - source_labels: [__address__]
+        regex: '.*:(9182)'
+        target_label: 'exporter'
+        replacement: 'wm'
+      - source_labels: [__address__]
+        regex: '.*:(9835)'
+        target_label: 'exporter'
+        replacement: 'nv'
+
+  #TE-15
+  - job_name: 'TE-15'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['TE-15-NODE-02:9182', 'TE-15-NODE-02:9835',
+                  'TE-15-NODE-03:9182', 'TE-15-NODE-03:9835',
+                  'TE-15-NODE-04:9182', 'TE-15-NODE-04:9835',
+                  'TE-15-NODE-05:9182', 'TE-15-NODE-05:9835',
+                  'TE-15-NODE-06:9182', 'TE-15-NODE-06:9835',
+                  'TE-15-NODE-07:9182', 'TE-15-NODE-07:9835']
+        labels:
+          group: 'TE-15-nodes'
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '(TE-15-NODE-0[2-7]):.*'
+        target_label: 'instance'
+      - source_labels: [__address__]
+        regex: '.*:(9182)'
+        target_label: 'exporter'
+        replacement: 'wm'
+      - source_labels: [__address__]
+        regex: '.*:(9835)'
+        target_label: 'exporter'
+        replacement: 'nv'
+
+   # TE-16
+  - job_name: 'TE-16'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['TE-16-NODE-02:9182', 'TE-16-NODE-02:9835',
+                  'TE-16-NODE-03:9182', 'TE-16-NODE-03:9835',
+                  'TE-16-NODE-04:9182', 'TE-16-NODE-04:9835',
+                  'TE-16-NODE-05:9182', 'TE-16-NODE-05:9835',
+                  'TE-16-NODE-06:9182', 'TE-16-NODE-06:9835',
+                  'TE-16-NODE-07:9182', 'TE-16-NODE-07:9835']
+        labels:
+          group: 'TE-16-nodes'
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '(TE-16-NODE-0[2-7]):.*'
+        target_label: 'instance'
+      - source_labels: [__address__]
+        regex: '.*:(9182)'
+        target_label: 'exporter'
+        replacement: 'wm'
+      - source_labels: [__address__]
+        regex: '.*:(9835)'
+        target_label: 'exporter'
+        replacement: 'nv'
+
+    #TE-17
+  - job_name: 'TE-17'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['TE-17-NODE-02:9182', 'TE-17-NODE-02:9835',
+                  'TE-17-NODE-03:9182', 'TE-17-NODE-03:9835',
+                  'TE-17-NODE-04:9182', 'TE-17-NODE-04:9835',
+                  'TE-17-NODE-05:9182', 'TE-17-NODE-05:9835',
+                  'TE-17-NODE-06:9182', 'TE-17-NODE-06:9835',
+                  'TE-17-NODE-07:9182', 'TE-17-NODE-07:9835']
+        labels:
+          group: 'TE-17-nodes'
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '(TE-17-NODE-0[2-7]):.*'
+        target_label: 'instance'
+      - source_labels: [__address__]
+        regex: '.*:(9182)'
+        target_label: 'exporter'
+        replacement: 'wm'
+      - source_labels: [__address__]
+        regex: '.*:(9835)'
+        target_label: 'exporter'
+        replacement: 'nv'
+
+    #TE-18
+  - job_name: 'TE-18'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['TE-18-NODE-02:9182', 'TE-18-NODE-02:9835',
+                  'TE-18-NODE-03:9182', 'TE-18-NODE-03:9835',
+                  'TE-18-NODE-04:9182', 'TE-18-NODE-04:9835',
+                  'TE-18-NODE-05:9182', 'TE-18-NODE-05:9835',
+                  'TE-18-NODE-06:9182', 'TE-18-NODE-06:9835',
+                  'TE-18-NODE-07:9182', 'TE-18-NODE-07:9835']
+        labels:
+          group: 'TE-18-nodes'
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '(TE-18-NODE-0[2-7]):.*'
+        target_label: 'instance'
+      - source_labels: [__address__]
+        regex: '.*:(9182)'
+        target_label: 'exporter'
+        replacement: 'wm'
+      - source_labels: [__address__]
+        regex: '.*:(9835)'
+        target_label: 'exporter'
+        replacement: 'nv'
+
+        #TE-20
+  - job_name: 'TE-20'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['TE-20-NODE-02:9182', 'TE-20-NODE-02:9835',
+                  'TE-20-NODE-03:9182', 'TE-20-NODE-03:9835',
+                  'TE-20-NODE-04:9182', 'TE-20-NODE-04:9835',
+                  'TE-20-NODE-05:9182', 'TE-20-NODE-05:9835',
+                  'TE-20-NODE-06:9182', 'TE-20-NODE-06:9835',
+                  'TE-20-NODE-07:9182', 'TE-20-NODE-07:9835']
+        labels:
+          group: 'TE-20-nodes'
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '(TE-20-NODE-0[2-7]):.*'
+        target_label: 'instance'
+      - source_labels: [__address__]
+        regex: '.*:(9182)'
+        target_label: 'exporter'
+        replacement: 'wm'
+      - source_labels: [__address__]
+        regex: '.*:(9835)'
+        target_label: 'exporter'
+        replacement: 'nv'
+
+  - job_name: 'TE-21'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['TE-21-NODE-02:9182', 'TE-21-NODE-02:9835',
+                  'TE-21-NODE-03:9182', 'TE-21-NODE-03:9835',
+                  'TE-21-NODE-04:9182', 'TE-21-NODE-04:9835',
+                  'TE-21-NODE-05:9182', 'TE-21-NODE-05:9835',
+                  'TE-21-NODE-06:9182', 'TE-21-NODE-06:9835',
+                  'TE-21-NODE-07:9182', 'TE-21-NODE-07:9835']
+        labels:
+          group: 'TE-21-nodes'
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '(TE-21-NODE-0[2-7]):.*'
+        target_label: 'instance'
+      - source_labels: [__address__]
+        regex: '.*:(9182)'
+        target_label: 'exporter'
+        replacement: 'wm'
+      - source_labels: [__address__]
+        regex: '.*:(9835)'
+        target_label: 'exporter'
+        replacement: 'nv'

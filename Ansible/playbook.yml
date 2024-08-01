@@ -1,0 +1,16 @@
+- name: Install Chocolatey on Windows
+  hosts: windows
+  gather_facts: false
+  vars:
+    ansible_connection: winrm
+    ansible_winrm_server_cert_validation: ignore
+    chocolatey_version: 1.3.1
+    chocolatey_source: https://community.chocolatey.org/api/v2/
+
+  tasks:
+    - name: Install Chocolatey using PowerShell
+      win_chocolatey:
+        name: chocolatey
+        state: present
+        version: "{{ chocolatey_version }}"
+        source: "{{ chocolatey_source }}"
