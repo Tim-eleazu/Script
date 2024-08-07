@@ -1,0 +1,1 @@
+A python script used to aid release notes. Download from blob storage after deployments and generates deployment locations
